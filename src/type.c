@@ -760,8 +760,21 @@ bool type_get_math_vector_info(const struct type* p_type, int* _Opt p_lanes, boo
     if (p_is_float_element)
         *p_is_float_element = false;
 
-    if (p_type == NULL || p_type->struct_or_union_specifier == NULL)
+    if (p_type == NULL)
         return false;
+
+    if (p_type->struct_or_union_specifier == NULL)
+    {
+        if (type_has_attribute(p_type, CAKE_ATTRIBUTE_VECTOR))
+        {
+            if (p_lanes)
+                *p_lanes = 0;
+            if (p_is_float_element)
+                *p_is_float_element = true;
+            return true;
+        }
+        return false;
+    }
 
     struct struct_or_union_specifier* _Opt p_complete =
         get_complete_struct_or_union_specifier(p_type->struct_or_union_specifier);
@@ -770,7 +783,17 @@ bool type_get_math_vector_info(const struct type* p_type, int* _Opt p_lanes, boo
         p_complete = p_type->struct_or_union_specifier;
 
     if (p_complete == NULL || !p_complete->cake_math_vector)
+    {
+        if (type_has_attribute(p_type, CAKE_ATTRIBUTE_VECTOR))
+        {
+            if (p_lanes)
+                *p_lanes = 0;
+            if (p_is_float_element)
+                *p_is_float_element = true;
+            return true;
+        }
         return false;
+    }
 
     if (p_lanes)
         *p_lanes = p_complete->cake_vector_lanes;

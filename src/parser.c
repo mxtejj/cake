@@ -4951,52 +4951,57 @@ static bool parse_vector_attribute_args(struct parser_ctx* ctx,
                                         char element_name[64],
                                         bool* p_element_is_float)
 {
+    (void)ctx;
     if (p_lanes == NULL || element_name == NULL || p_element_is_float == NULL)
         return false;
+
+    *p_lanes = 0;
+    element_name[0] = '\0';
+    *p_element_is_float = false;
 
     if (p_attribute == NULL ||
         p_attribute->attribute_argument_clause == NULL ||
         p_attribute->attribute_argument_clause->p_balanced_token_sequence == NULL)
     {
-        diagnostic(W_ATTRIBUTES,
-                   ctx,
-                   p_attribute ? p_attribute->attribute_token : NULL,
-                   NULL,
-                   "vector attribute requires arguments: vector(N, ElementType)");
-        return false;
+        return true;
     }
+
+    char args[256] = { 0 };
+    char elem[64] = { 0 };
 
     const struct balanced_token* _Opt bt =
         p_attribute->attribute_argument_clause->p_balanced_token_sequence->head;
-
-    if (bt == NULL || !parse_positive_int_token(bt->token, p_lanes))
+    while (bt)
     {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "vector attribute expects a positive integer lane count");
-        return false;
+        if (!token_is_blank(bt->token))
+        {
+            strncat(args, bt->token->lexeme, sizeof(args) - strlen(args) - 1);
+        }
+        bt = bt->next;
     }
 
-    bt = bt->next;
-    if (bt == NULL || bt->token->type != ',')
+    char* p = args;
+    while (*p == '(') p++;
+    size_t len = strlen(p);
+    while (len > 0 && p[len - 1] == ')')
     {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "vector attribute expects ',' between lane count and element type");
-        return false;
+        p[len - 1] = '\0';
+        len--;
     }
 
-    bt = bt->next;
-    if (bt == NULL || !token_is_identifier_or_keyword(bt->token->type))
+    if (sscanf(p, "%d,%63[A-Za-z0-9_]", p_lanes, elem) != 2)
     {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "vector attribute expects an element type name");
-        return false;
+        return true;
     }
 
-    snprintf(element_name, 64, "%s", bt->token->lexeme);
+    if (*p_lanes <= 0)
+    {
+        *p_lanes = 0;
+        return true;
+    }
+
+    snprintf(element_name, 64, "%s", elem);
     *p_element_is_float = is_float_name_for_math_type(element_name);
-
-    if (bt->next != NULL)
-    {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "vector attribute received too many arguments");
-        return false;
-    }
 
     return true;
 }
@@ -5008,66 +5013,59 @@ static bool parse_matrix_attribute_args(struct parser_ctx* ctx,
                                         char element_name[64],
                                         bool* p_element_is_float)
 {
+    (void)ctx;
     if (p_rows == NULL || p_cols == NULL || element_name == NULL || p_element_is_float == NULL)
         return false;
+
+    *p_rows = 0;
+    *p_cols = 0;
+    element_name[0] = '\0';
+    *p_element_is_float = false;
 
     if (p_attribute == NULL ||
         p_attribute->attribute_argument_clause == NULL ||
         p_attribute->attribute_argument_clause->p_balanced_token_sequence == NULL)
     {
-        diagnostic(W_ATTRIBUTES,
-                   ctx,
-                   p_attribute ? p_attribute->attribute_token : NULL,
-                   NULL,
-                   "matrix attribute requires arguments: matrix(Rows, Cols, ElementType)");
-        return false;
+        return true;
     }
+
+    char args[256] = { 0 };
+    char elem[64] = { 0 };
 
     const struct balanced_token* _Opt bt =
         p_attribute->attribute_argument_clause->p_balanced_token_sequence->head;
-
-    if (bt == NULL || !parse_positive_int_token(bt->token, p_rows))
+    while (bt)
     {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects a positive integer row count");
-        return false;
+        if (!token_is_blank(bt->token))
+        {
+            strncat(args, bt->token->lexeme, sizeof(args) - strlen(args) - 1);
+        }
+        bt = bt->next;
     }
 
-    bt = bt->next;
-    if (bt == NULL || bt->token->type != ',')
+    char* p = args;
+    while (*p == '(') p++;
+    size_t len = strlen(p);
+    while (len > 0 && p[len - 1] == ')')
     {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects ',' after row count");
-        return false;
+        p[len - 1] = '\0';
+        len--;
     }
 
-    bt = bt->next;
-    if (bt == NULL || !parse_positive_int_token(bt->token, p_cols))
+    if (sscanf(p, "%d,%d,%63[A-Za-z0-9_]", p_rows, p_cols, elem) != 3)
     {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects a positive integer column count");
-        return false;
+        return true;
     }
 
-    bt = bt->next;
-    if (bt == NULL || bt->token->type != ',')
+    if (*p_rows <= 0 || *p_cols <= 0)
     {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects ',' before element type");
-        return false;
+        *p_rows = 0;
+        *p_cols = 0;
+        return true;
     }
 
-    bt = bt->next;
-    if (bt == NULL || !token_is_identifier_or_keyword(bt->token->type))
-    {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects an element type name");
-        return false;
-    }
-
-    snprintf(element_name, 64, "%s", bt->token->lexeme);
+    snprintf(element_name, 64, "%s", elem);
     *p_element_is_float = is_float_name_for_math_type(element_name);
-
-    if (bt->next != NULL)
-    {
-        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute received too many arguments");
-        return false;
-    }
 
     return true;
 }
@@ -5128,6 +5126,55 @@ static void collect_math_type_attributes(struct parser_ctx* ctx,
             }
         }
         p_as = p_as->next;
+    }
+}
+
+static void infer_math_type_metadata_from_members(struct struct_or_union_specifier* p_struct_or_union_specifier)
+{
+    if (p_struct_or_union_specifier == NULL)
+        return;
+
+    if (p_struct_or_union_specifier->cake_math_vector &&
+        p_struct_or_union_specifier->cake_vector_lanes <= 0)
+    {
+        int lanes = 0;
+        bool all_floating = true;
+
+        struct member_declaration* _Opt p_member = p_struct_or_union_specifier->member_declaration_list.head;
+        while (p_member)
+        {
+            if (p_member->member_declarator_list_opt)
+            {
+                struct member_declarator* _Opt p_member_declarator =
+                    p_member->member_declarator_list_opt->head;
+                while (p_member_declarator)
+                {
+                    if (p_member_declarator->declarator)
+                    {
+                        lanes++;
+                        if (!type_is_floating_point(&p_member_declarator->declarator->type))
+                        {
+                            all_floating = false;
+                        }
+                    }
+                    p_member_declarator = p_member_declarator->next;
+                }
+            }
+            p_member = p_member->next;
+        }
+
+        p_struct_or_union_specifier->cake_vector_lanes = lanes;
+        if (!p_struct_or_union_specifier->cake_vector_element_is_float)
+        {
+            p_struct_or_union_specifier->cake_vector_element_is_float = all_floating;
+        }
+        if (p_struct_or_union_specifier->cake_vector_element_name[0] == '\0' &&
+            all_floating)
+        {
+            snprintf(p_struct_or_union_specifier->cake_vector_element_name,
+                     sizeof p_struct_or_union_specifier->cake_vector_element_name,
+                     "float");
+        }
     }
 }
 
@@ -5360,6 +5407,8 @@ struct struct_or_union_specifier* _Owner _Opt struct_or_union_specifier(struct p
 
             if (parser_match_tk(ctx, '}') != 0)
                 throw;
+
+            infer_math_type_metadata_from_members(p_struct_or_union_specifier);
         }
         else
         {

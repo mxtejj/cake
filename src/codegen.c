@@ -746,7 +746,13 @@ static bool type_is_supported_codegen_math_vector(const struct type* p_type, int
     if (!type_get_math_vector_info(p_type, &lanes, &is_float_element))
         return false;
 
-    if (!is_float_element || lanes < 2 || lanes > 4)
+    if (!is_float_element)
+        return false;
+
+    if (lanes == 0)
+        lanes = 4;
+
+    if (lanes < 2 || lanes > 4)
         return false;
 
     if (p_lanes)
@@ -936,7 +942,7 @@ static bool codegen_try_emit_vector_binary_expression(struct codegen_ctx* ctx,
         return false;
     }
 
-    if (left_lanes != right_lanes ||
+    if ((left_lanes > 0 && right_lanes > 0 && left_lanes != right_lanes) ||
         !type_is_same(&p_expression->left->type, &p_expression->right->type, false))
     {
         return false;

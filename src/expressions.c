@@ -163,18 +163,38 @@ bool is_primary_expression(enum expression_type t)
     return false;
 }
 
-static bool expression_is_supported_math_vector(const struct expression* p_expression,
+static bool expression_is_supported_math_vector(struct parser_ctx* ctx,
+                                                const struct expression* p_expression,
                                                 int* _Opt p_lanes)
 {
     int lanes = 0;
     bool is_float_element = false;
     if (!type_get_math_vector_info(&p_expression->type, &lanes, &is_float_element))
-        return false;
+    {
+        if (ctx == NULL || p_expression->type.name_opt == NULL)
+            return false;
+
+        struct struct_or_union_specifier* _Opt p_found =
+            find_struct_or_union_specifier(ctx, p_expression->type.name_opt);
+        if (p_found == NULL)
+            return false;
+
+        struct struct_or_union_specifier* _Opt p_complete =
+            get_complete_struct_or_union_specifier(p_found);
+        if (p_complete == NULL)
+            p_complete = p_found;
+
+        if (p_complete == NULL || !p_complete->cake_math_vector)
+            return false;
+
+        lanes = p_complete->cake_vector_lanes;
+        is_float_element = p_complete->cake_vector_element_is_float;
+    }
 
     if (!is_float_element)
         return false;
 
-    if (lanes < 2 || lanes > 4)
+    if (lanes > 0 && (lanes < 2 || lanes > 4))
         return false;
 
     if (p_lanes)
@@ -4569,9 +4589,9 @@ struct expression* _Owner _Opt multiplicative_expression(struct parser_ctx* ctx,
                 int left_lanes = 0;
                 int right_lanes = 0;
                 const bool left_is_vector =
-                    expression_is_supported_math_vector(new_expression->left, &left_lanes);
-                const bool right_is_vector =
-                    expression_is_supported_math_vector(new_expression->right, &right_lanes);
+                expression_is_supported_math_vector(ctx, new_expression->left, &left_lanes);
+            const bool right_is_vector =
+                expression_is_supported_math_vector(ctx, new_expression->right, &right_lanes);
 
                 if (left_is_vector || right_is_vector)
                 {
@@ -4583,7 +4603,7 @@ struct expression* _Owner _Opt multiplicative_expression(struct parser_ctx* ctx,
                                    NULL,
                                    "vector arithmetic requires both operands to be vectors of the same type");
                     }
-                    else if (left_lanes != right_lanes ||
+                    else if ((left_lanes > 0 && right_lanes > 0 && left_lanes != right_lanes) ||
                              !type_is_same(&new_expression->left->type, &new_expression->right->type, false))
                     {
                         diagnostic(C_ERROR_INVALID_TYPE,
@@ -4762,9 +4782,9 @@ struct expression* _Owner _Opt additive_expression(struct parser_ctx* ctx, enum 
             int left_vector_lanes = 0;
             int right_vector_lanes = 0;
             const bool left_is_math_vector =
-                expression_is_supported_math_vector(new_expression->left, &left_vector_lanes);
+                expression_is_supported_math_vector(ctx, new_expression->left, &left_vector_lanes);
             const bool right_is_math_vector =
-                expression_is_supported_math_vector(new_expression->right, &right_vector_lanes);
+                expression_is_supported_math_vector(ctx, new_expression->right, &right_vector_lanes);
 
             if (!type_is_scalar_decay(&new_expression->left->type) && !left_is_math_vector)
             {
@@ -4797,7 +4817,7 @@ struct expression* _Owner _Opt additive_expression(struct parser_ctx* ctx, enum 
                     {
                         diagnostic(C_ERROR_INVALID_TYPE, ctx, operator_position, NULL, "vector addition requires both operands to be vectors");
                     }
-                    else if (left_vector_lanes != right_vector_lanes ||
+                    else if ((left_vector_lanes > 0 && right_vector_lanes > 0 && left_vector_lanes != right_vector_lanes) ||
                              !type_is_same(&new_expression->left->type, &new_expression->right->type, false))
                     {
                         diagnostic(C_ERROR_INVALID_TYPE, ctx, operator_position, NULL, "vector addition requires compatible vector operands with matching lane count");
@@ -4906,7 +4926,7 @@ struct expression* _Owner _Opt additive_expression(struct parser_ctx* ctx, enum 
                     {
                         diagnostic(C_ERROR_INVALID_TYPE, ctx, operator_position, NULL, "vector subtraction requires both operands to be vectors");
                     }
-                    else if (left_vector_lanes != right_vector_lanes ||
+                    else if ((left_vector_lanes > 0 && right_vector_lanes > 0 && left_vector_lanes != right_vector_lanes) ||
                              !type_is_same(&new_expression->left->type, &new_expression->right->type, false))
                     {
                         diagnostic(C_ERROR_INVALID_TYPE, ctx, operator_position, NULL, "vector subtraction requires compatible vector operands with matching lane count");
