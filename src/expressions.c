@@ -163,6 +163,26 @@ bool is_primary_expression(enum expression_type t)
     return false;
 }
 
+static bool expression_is_supported_math_vector(const struct expression* p_expression,
+                                                int* _Opt p_lanes)
+{
+    int lanes = 0;
+    bool is_float_element = false;
+    if (!type_get_math_vector_info(&p_expression->type, &lanes, &is_float_element))
+        return false;
+
+    if (!is_float_element)
+        return false;
+
+    if (lanes < 2 || lanes > 4)
+        return false;
+
+    if (p_lanes)
+        *p_lanes = lanes;
+
+    return true;
+}
+
 static int compare_function_arguments(struct parser_ctx* ctx,
                                       struct type* p_type,
                                       struct argument_expression_list* p_argument_expression_list)
@@ -4542,29 +4562,65 @@ struct expression* _Owner _Opt multiplicative_expression(struct parser_ctx* ctx,
                         NULL,
                         "right is not an integer type");
                 }
+                new_expression->type = type_common(&new_expression->left->type, &new_expression->right->type, ctx->options.target);
             }
             else
             {
-                /* Each of the operands shall have arithmetic type */
-                if (!type_is_arithmetic(&new_expression->left->type))
-                {
-                    diagnostic(C_ERROR_LEFT_IS_NOT_ARITHMETIC,
-                        ctx,
-                        new_expression->left->first_token,
-                        NULL,
-                        "left is not an arithmetic type");
-                }
+                int left_lanes = 0;
+                int right_lanes = 0;
+                const bool left_is_vector =
+                    expression_is_supported_math_vector(new_expression->left, &left_lanes);
+                const bool right_is_vector =
+                    expression_is_supported_math_vector(new_expression->right, &right_lanes);
 
-                if (!type_is_arithmetic(&new_expression->right->type))
+                if (left_is_vector || right_is_vector)
                 {
-                    diagnostic(C_ERROR_RIGHT_IS_NOT_ARITHMETIC,
-                        ctx,
-                        new_expression->right->first_token,
-                        NULL,
-                        "right is not an arithmetic type");
+                    if (!(left_is_vector && right_is_vector))
+                    {
+                        diagnostic(C_ERROR_INVALID_TYPE,
+                                   ctx,
+                                   new_expression->first_token,
+                                   NULL,
+                                   "vector arithmetic requires both operands to be vectors of the same type");
+                    }
+                    else if (left_lanes != right_lanes ||
+                             !type_is_same(&new_expression->left->type, &new_expression->right->type, false))
+                    {
+                        diagnostic(C_ERROR_INVALID_TYPE,
+                                   ctx,
+                                   new_expression->first_token,
+                                   NULL,
+                                   "vector arithmetic requires compatible vector operands with matching lane count");
+                    }
+                    else
+                    {
+                        new_expression->type = type_dup(&new_expression->left->type);
+                    }
+                }
+                else
+                {
+                    /* Each of the operands shall have arithmetic type */
+                    if (!type_is_arithmetic(&new_expression->left->type))
+                    {
+                        diagnostic(C_ERROR_LEFT_IS_NOT_ARITHMETIC,
+                                   ctx,
+                                   new_expression->left->first_token,
+                                   NULL,
+                                   "left is not an arithmetic type");
+                    }
+
+                    if (!type_is_arithmetic(&new_expression->right->type))
+                    {
+                        diagnostic(C_ERROR_RIGHT_IS_NOT_ARITHMETIC,
+                                   ctx,
+                                   new_expression->right->first_token,
+                                   NULL,
+                                   "right is not an arithmetic type");
+                    }
+
+                    new_expression->type = type_common(&new_expression->left->type, &new_expression->right->type, ctx->options.target);
                 }
             }
-            new_expression->type = type_common(&new_expression->left->type, &new_expression->right->type, ctx->options.target);
 
             if (eval_mode == EXPRESSION_EVAL_MODE_VALUE_AND_TYPE)
             {
@@ -4703,13 +4759,19 @@ struct expression* _Owner _Opt additive_expression(struct parser_ctx* ctx, enum 
 
             new_expression->last_token = new_expression->right->last_token;
 
+            int left_vector_lanes = 0;
+            int right_vector_lanes = 0;
+            const bool left_is_math_vector =
+                expression_is_supported_math_vector(new_expression->left, &left_vector_lanes);
+            const bool right_is_math_vector =
+                expression_is_supported_math_vector(new_expression->right, &right_vector_lanes);
 
-            if (!type_is_scalar_decay(&new_expression->left->type))
+            if (!type_is_scalar_decay(&new_expression->left->type) && !left_is_math_vector)
             {
                 diagnostic(C_ERROR_LEFT_IS_NOT_SCALAR, ctx, operator_position, NULL, "left operator is not scalar");
             }
 
-            if (!type_is_scalar_decay(&new_expression->right->type))
+            if (!type_is_scalar_decay(&new_expression->right->type) && !right_is_math_vector)
             {
                 diagnostic(C_ERROR_RIGHT_IS_NOT_SCALAR, ctx, operator_position, NULL, "right operator is not scalar");
             }
@@ -4729,7 +4791,23 @@ struct expression* _Owner _Opt additive_expression(struct parser_ctx* ctx, enum 
                  or one operand shall be a pointer to a complete object type and
                  the other shall have integer type. (Incrementing is equivalent to adding 1.)
                 */
-                if (b_left_is_arithmetic && b_right_is_arithmetic)
+                if (left_is_math_vector || right_is_math_vector)
+                {
+                    if (!(left_is_math_vector && right_is_math_vector))
+                    {
+                        diagnostic(C_ERROR_INVALID_TYPE, ctx, operator_position, NULL, "vector addition requires both operands to be vectors");
+                    }
+                    else if (left_vector_lanes != right_vector_lanes ||
+                             !type_is_same(&new_expression->left->type, &new_expression->right->type, false))
+                    {
+                        diagnostic(C_ERROR_INVALID_TYPE, ctx, operator_position, NULL, "vector addition requires compatible vector operands with matching lane count");
+                    }
+                    else
+                    {
+                        new_expression->type = type_dup(&new_expression->left->type);
+                    }
+                }
+                else if (b_left_is_arithmetic && b_right_is_arithmetic)
                 {
                     new_expression->type = type_common(&new_expression->left->type, &new_expression->right->type, ctx->options.target);
 
@@ -4822,7 +4900,23 @@ struct expression* _Owner _Opt additive_expression(struct parser_ctx* ctx, enum 
                     — the left operand is a pointer to a complete object type and the right operand has integer type.
                     (Decrementing is equivalent to subtracting 1.)
                 */
-                if (b_left_is_arithmetic && b_right_is_arithmetic)
+                if (left_is_math_vector || right_is_math_vector)
+                {
+                    if (!(left_is_math_vector && right_is_math_vector))
+                    {
+                        diagnostic(C_ERROR_INVALID_TYPE, ctx, operator_position, NULL, "vector subtraction requires both operands to be vectors");
+                    }
+                    else if (left_vector_lanes != right_vector_lanes ||
+                             !type_is_same(&new_expression->left->type, &new_expression->right->type, false))
+                    {
+                        diagnostic(C_ERROR_INVALID_TYPE, ctx, operator_position, NULL, "vector subtraction requires compatible vector operands with matching lane count");
+                    }
+                    else
+                    {
+                        new_expression->type = type_dup(&new_expression->left->type);
+                    }
+                }
+                else if (b_left_is_arithmetic && b_right_is_arithmetic)
                 {
                     new_expression->type = type_common(&new_expression->left->type, &new_expression->right->type, ctx->options.target);
 

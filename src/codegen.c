@@ -739,6 +739,230 @@ static void vm_emit_countof_expr(struct codegen_ctx* ctx,
     }
 }
 
+static bool type_is_supported_codegen_math_vector(const struct type* p_type, int* _Opt p_lanes)
+{
+    int lanes = 0;
+    bool is_float_element = false;
+    if (!type_get_math_vector_info(p_type, &lanes, &is_float_element))
+        return false;
+
+    if (!is_float_element || lanes < 2 || lanes > 4)
+        return false;
+
+    if (p_lanes)
+        *p_lanes = lanes;
+    return true;
+}
+
+static const char* vector_op_name(enum expression_type expression_type)
+{
+    switch (expression_type)
+    {
+    case ADDITIVE_EXPRESSION_PLUS:
+        return "add";
+    case ADDITIVE_EXPRESSION_MINUS:
+        return "sub";
+    case MULTIPLICATIVE_EXPRESSION_MULT:
+        return "mul";
+    case MULTIPLICATIVE_EXPRESSION_DIV:
+        return "div";
+    default:
+        return "";
+    }
+}
+
+static const char* vector_op_symbol(enum expression_type expression_type)
+{
+    switch (expression_type)
+    {
+    case ADDITIVE_EXPRESSION_PLUS:
+        return "+";
+    case ADDITIVE_EXPRESSION_MINUS:
+        return "-";
+    case MULTIPLICATIVE_EXPRESSION_MULT:
+        return "*";
+    case MULTIPLICATIVE_EXPRESSION_DIV:
+        return "/";
+    default:
+        return "+";
+    }
+}
+
+static const char* vector_sse_intrinsic_name(enum expression_type expression_type)
+{
+    switch (expression_type)
+    {
+    case ADDITIVE_EXPRESSION_PLUS:
+        return "_mm_add_ps";
+    case ADDITIVE_EXPRESSION_MINUS:
+        return "_mm_sub_ps";
+    case MULTIPLICATIVE_EXPRESSION_MULT:
+        return "_mm_mul_ps";
+    case MULTIPLICATIVE_EXPRESSION_DIV:
+        return "_mm_div_ps";
+    default:
+        return "_mm_add_ps";
+    }
+}
+
+static const char* vector_neon_intrinsic_name(enum expression_type expression_type)
+{
+    switch (expression_type)
+    {
+    case ADDITIVE_EXPRESSION_PLUS:
+        return "vaddq_f32";
+    case ADDITIVE_EXPRESSION_MINUS:
+        return "vsubq_f32";
+    case MULTIPLICATIVE_EXPRESSION_MULT:
+        return "vmulq_f32";
+    case MULTIPLICATIVE_EXPRESSION_DIV:
+        return "vdivq_f32";
+    default:
+        return "vaddq_f32";
+    }
+}
+
+static void emit_vector_simd_headers_once(struct codegen_ctx* ctx)
+{
+    if (ctx->cake_vector_simd_headers_emitted)
+        return;
+
+    ctx->cake_vector_simd_headers_emitted = true;
+    ss_fprintf(&ctx->add_this_before_external_decl,
+               "#ifndef __CAKE_VECTOR_SIMD_HEADERS\n"
+               "#define __CAKE_VECTOR_SIMD_HEADERS\n"
+               "#if defined(__SSE2__) || defined(_M_X64) || defined(_M_IX86_FP)\n"
+               "#include <xmmintrin.h>\n"
+               "#include <emmintrin.h>\n"
+               "#endif\n"
+               "#if defined(__ARM_NEON) || defined(__ARM_NEON__)\n"
+               "#include <arm_neon.h>\n"
+               "#endif\n"
+               "#endif\n");
+}
+
+static void emit_vector_binary_helper(struct codegen_ctx* ctx,
+                                      const struct type* p_type,
+                                      enum expression_type expression_type,
+                                      int lanes)
+{
+    if (p_type == NULL || p_type->struct_or_union_specifier == NULL)
+        return;
+
+    struct struct_or_union_specifier* _Opt p_complete =
+        get_complete_struct_or_union_specifier2(p_type->struct_or_union_specifier);
+    if (p_complete == NULL)
+        p_complete = p_type->struct_or_union_specifier;
+    if (p_complete == NULL)
+        return;
+
+    emit_vector_simd_headers_once(ctx);
+
+    struct osstream type_ss = { 0 };
+    d_print_type(ctx, &type_ss, p_type, NULL, false);
+
+    const char* op_name = vector_op_name(expression_type);
+    const char* op_symbol = vector_op_symbol(expression_type);
+    const char* sse_fn = vector_sse_intrinsic_name(expression_type);
+    const char* neon_fn = vector_neon_intrinsic_name(expression_type);
+
+    char helper_name[128] = { 0 };
+    char helper_guard[160] = { 0 };
+    snprintf(helper_name, sizeof helper_name, "__cake_vec_%u_%s", p_complete->unique_id, op_name);
+    snprintf(helper_guard, sizeof helper_guard, "__CAKE_VEC_%u_%s_GUARD", p_complete->unique_id, op_name);
+
+    ss_fprintf(&ctx->add_this_before_external_decl,
+               "#ifndef %s\n"
+               "#define %s\n"
+               "static %s %s(%s a, %s b)\n"
+               "{\n"
+               "    union { %s v; float f[4]; } ua = { a }, ub = { b }, ur;\n"
+               "#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)\n"
+               "    if (%d == 4) {\n"
+               "        __m128 va = _mm_loadu_ps(ua.f);\n"
+               "        __m128 vb = _mm_loadu_ps(ub.f);\n"
+               "        __m128 vr = %s(va, vb);\n"
+               "        _mm_storeu_ps(ur.f, vr);\n"
+               "        return ur.v;\n"
+               "    }\n"
+               "#endif\n"
+               "#if defined(__ARM_NEON) || defined(__ARM_NEON__)\n"
+               "    if (%d == 4) {\n"
+               "        float32x4_t va = vld1q_f32(ua.f);\n"
+               "        float32x4_t vb = vld1q_f32(ub.f);\n"
+               "        float32x4_t vr = %s(va, vb);\n"
+               "        vst1q_f32(ur.f, vr);\n"
+               "        return ur.v;\n"
+               "    }\n"
+               "#endif\n"
+               "    ur.f[0] = ua.f[0] %s ub.f[0];\n"
+               "    if (%d > 1) ur.f[1] = ua.f[1] %s ub.f[1];\n"
+               "    if (%d > 2) ur.f[2] = ua.f[2] %s ub.f[2];\n"
+               "    if (%d > 3) ur.f[3] = ua.f[3] %s ub.f[3];\n"
+               "    return ur.v;\n"
+               "}\n"
+               "#endif\n",
+               helper_guard,
+               helper_guard,
+               type_ss.c_str,
+               helper_name,
+               type_ss.c_str,
+               type_ss.c_str,
+               type_ss.c_str,
+               lanes,
+               sse_fn,
+               lanes,
+               neon_fn,
+               op_symbol,
+               lanes,
+               op_symbol,
+               lanes,
+               op_symbol,
+               lanes,
+               op_symbol);
+
+    ss_close(&type_ss);
+}
+
+static bool codegen_try_emit_vector_binary_expression(struct codegen_ctx* ctx,
+                                                      struct osstream* oss,
+                                                      struct expression* p_expression)
+{
+    int left_lanes = 0;
+    int right_lanes = 0;
+    if (!type_is_supported_codegen_math_vector(&p_expression->left->type, &left_lanes) ||
+        !type_is_supported_codegen_math_vector(&p_expression->right->type, &right_lanes))
+    {
+        return false;
+    }
+
+    if (left_lanes != right_lanes ||
+        !type_is_same(&p_expression->left->type, &p_expression->right->type, false))
+    {
+        return false;
+    }
+
+    struct struct_or_union_specifier* _Opt p_complete =
+        get_complete_struct_or_union_specifier2(p_expression->left->type.struct_or_union_specifier);
+    if (p_complete == NULL)
+        p_complete = p_expression->left->type.struct_or_union_specifier;
+    if (p_complete == NULL)
+        return false;
+
+    emit_vector_binary_helper(ctx, &p_expression->left->type, p_expression->expression_type, left_lanes);
+
+    const char* op_name = vector_op_name(p_expression->expression_type);
+    char helper_name[128] = { 0 };
+    snprintf(helper_name, sizeof helper_name, "__cake_vec_%u_%s", p_complete->unique_id, op_name);
+
+    ss_fprintf(oss, "%s(", helper_name);
+    codegen_visit_expression(ctx, oss, p_expression->left);
+    ss_fprintf(oss, ", ");
+    codegen_visit_expression(ctx, oss, p_expression->right);
+    ss_fprintf(oss, ")");
+    return true;
+}
+
 
 
 static void codegen_visit_expression(struct codegen_ctx* ctx, struct osstream* oss, struct expression* p_expression)
@@ -1554,32 +1778,44 @@ static void codegen_visit_expression(struct codegen_ctx* ctx, struct osstream* o
     case ADDITIVE_EXPRESSION_MINUS:
         assert(p_expression->left != NULL);
         assert(p_expression->right != NULL);
-        codegen_visit_expression(ctx, oss, p_expression->left);
-        ss_fprintf(oss, " - ");
-        codegen_visit_expression(ctx, oss, p_expression->right);
+        if (!codegen_try_emit_vector_binary_expression(ctx, oss, p_expression))
+        {
+            codegen_visit_expression(ctx, oss, p_expression->left);
+            ss_fprintf(oss, " - ");
+            codegen_visit_expression(ctx, oss, p_expression->right);
+        }
         break;
 
     case ADDITIVE_EXPRESSION_PLUS:
         assert(p_expression->left != NULL);
         assert(p_expression->right != NULL);
-        codegen_visit_expression(ctx, oss, p_expression->left);
-        ss_fprintf(oss, " + ");
-        codegen_visit_expression(ctx, oss, p_expression->right);
+        if (!codegen_try_emit_vector_binary_expression(ctx, oss, p_expression))
+        {
+            codegen_visit_expression(ctx, oss, p_expression->left);
+            ss_fprintf(oss, " + ");
+            codegen_visit_expression(ctx, oss, p_expression->right);
+        }
         break;
 
     case MULTIPLICATIVE_EXPRESSION_MULT:
         assert(p_expression->left != NULL);
         assert(p_expression->right != NULL);
-        codegen_visit_expression(ctx, oss, p_expression->left);
-        ss_fprintf(oss, " * ");
-        codegen_visit_expression(ctx, oss, p_expression->right);
+        if (!codegen_try_emit_vector_binary_expression(ctx, oss, p_expression))
+        {
+            codegen_visit_expression(ctx, oss, p_expression->left);
+            ss_fprintf(oss, " * ");
+            codegen_visit_expression(ctx, oss, p_expression->right);
+        }
         break;
     case MULTIPLICATIVE_EXPRESSION_DIV:
         assert(p_expression->left != NULL);
         assert(p_expression->right != NULL);
-        codegen_visit_expression(ctx, oss, p_expression->left);
-        ss_fprintf(oss, " / ");
-        codegen_visit_expression(ctx, oss, p_expression->right);
+        if (!codegen_try_emit_vector_binary_expression(ctx, oss, p_expression))
+        {
+            codegen_visit_expression(ctx, oss, p_expression->left);
+            ss_fprintf(oss, " / ");
+            codegen_visit_expression(ctx, oss, p_expression->right);
+        }
         break;
 
     case MULTIPLICATIVE_EXPRESSION_MOD:
@@ -4968,5 +5204,3 @@ void codegen_visit(struct codegen_ctx* ctx, struct osstream* oss)
 
     ss_close(&declarations);
 }
-
-

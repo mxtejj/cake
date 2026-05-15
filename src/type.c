@@ -753,6 +753,64 @@ bool type_has_attribute(const struct type* p_type, enum attribute_flags attribut
     return false;
 }
 
+bool type_get_math_vector_info(const struct type* p_type, int* _Opt p_lanes, bool* _Opt p_is_float_element)
+{
+    if (p_lanes)
+        *p_lanes = 0;
+    if (p_is_float_element)
+        *p_is_float_element = false;
+
+    if (p_type == NULL || p_type->struct_or_union_specifier == NULL)
+        return false;
+
+    struct struct_or_union_specifier* _Opt p_complete =
+        get_complete_struct_or_union_specifier(p_type->struct_or_union_specifier);
+
+    if (p_complete == NULL)
+        p_complete = p_type->struct_or_union_specifier;
+
+    if (p_complete == NULL || !p_complete->cake_math_vector)
+        return false;
+
+    if (p_lanes)
+        *p_lanes = p_complete->cake_vector_lanes;
+    if (p_is_float_element)
+        *p_is_float_element = p_complete->cake_vector_element_is_float;
+
+    return true;
+}
+
+bool type_get_math_matrix_info(const struct type* p_type, int* _Opt p_rows, int* _Opt p_cols, bool* _Opt p_is_float_element)
+{
+    if (p_rows)
+        *p_rows = 0;
+    if (p_cols)
+        *p_cols = 0;
+    if (p_is_float_element)
+        *p_is_float_element = false;
+
+    if (p_type == NULL || p_type->struct_or_union_specifier == NULL)
+        return false;
+
+    struct struct_or_union_specifier* _Opt p_complete =
+        get_complete_struct_or_union_specifier(p_type->struct_or_union_specifier);
+
+    if (p_complete == NULL)
+        p_complete = p_type->struct_or_union_specifier;
+
+    if (p_complete == NULL || !p_complete->cake_math_matrix)
+        return false;
+
+    if (p_rows)
+        *p_rows = p_complete->cake_matrix_rows;
+    if (p_cols)
+        *p_cols = p_complete->cake_matrix_cols;
+    if (p_is_float_element)
+        *p_is_float_element = p_complete->cake_matrix_element_is_float;
+
+    return true;
+}
+
 bool type_is_maybe_unused(const struct type* p_type)
 {
     return type_has_attribute(p_type, STD_ATTRIBUTE_MAYBE_UNUSED);

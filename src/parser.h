@@ -712,6 +712,17 @@ struct struct_or_union_specifier
 
     struct attribute_specifier_sequence* _Owner _Opt attribute_specifier_sequence_opt;
     struct member_declaration_list member_declaration_list;
+    
+    bool cake_math_vector;
+    int cake_vector_lanes;
+    bool cake_vector_element_is_float;
+    char cake_vector_element_name[64];
+
+    bool cake_math_matrix;
+    int cake_matrix_rows;
+    int cake_matrix_cols;
+    bool cake_matrix_element_is_float;
+    char cake_matrix_element_name[64];
 
     struct token* first_token;
     struct token* last_token;

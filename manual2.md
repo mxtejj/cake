@@ -861,6 +861,16 @@ Replaces C11 `_Noreturn`.
 
 **`[[unsequenced]]`** / **`[[reproducible]]`** *(TODO)*
 
+**Cake math-type attributes** *(Extension, initial scope)*  
+Cake recognizes `[[vector(N, T)]]`, `[[cake::vector(N, T)]]`, `[[matrix(R, C, T)]]`, and `[[cake::matrix(R, C, T)]]`.
+
+Current implemented operator support is focused on float vectors (`T = float` / `F32`) with lane counts 2..4:
+- Binary `+`, `-`, `*`, `/` between compatible vectors.
+- Lowered by backend to generated helper calls.
+- SIMD paths are used when available (`SSE2` on x86/x64, `NEON` on ARM), with deterministic scalar fallback.
+
+Matrix and mixed vector/matrix operators are parsed as metadata for future phases.
+
 Reference: https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2335.pdf
 
 ### 9.16 `__has_attribute` / `__has_include`

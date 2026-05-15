@@ -56,6 +56,7 @@ struct codegen_ctx
 
     bool define_nullptr;
     bool null_pointer_constant_used;
+    bool cake_vector_simd_headers_emitted;
 
     bool address_of_argument;
         

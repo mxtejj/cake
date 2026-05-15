@@ -22,6 +22,7 @@
 #include "flow.h"
 #include "defer.h"
 #include <errno.h>
+#include <limits.h>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -4912,6 +4913,224 @@ bool struct_or_union_specifier_is_union(const struct struct_or_union_specifier* 
     return p->first_token->type == TK_KEYWORD_UNION;
 }
 
+static bool parse_positive_int_token(const struct token* token, int* p_value)
+{
+    if (token == NULL || p_value == NULL)
+        return false;
+
+    if (token->type != TK_COMPILER_DECIMAL_CONSTANT &&
+        token->type != TK_PPNUMBER)
+    {
+        return false;
+    }
+
+    char* end = NULL;
+    const long value = strtol(token->lexeme, &end, 10);
+    if (end == NULL || *end != '\0' || value <= 0 || value > INT_MAX)
+        return false;
+
+    *p_value = (int)value;
+    return true;
+}
+
+static bool is_float_name_for_math_type(const char* name)
+{
+    if (name == NULL)
+        return false;
+
+    return strcmp(name, "float") == 0 ||
+           strcmp(name, "Float") == 0 ||
+           strcmp(name, "FLOAT") == 0 ||
+           strcmp(name, "f32") == 0 ||
+           strcmp(name, "F32") == 0;
+}
+
+static bool parse_vector_attribute_args(struct parser_ctx* ctx,
+                                        const struct attribute* p_attribute,
+                                        int* p_lanes,
+                                        char element_name[64],
+                                        bool* p_element_is_float)
+{
+    if (p_lanes == NULL || element_name == NULL || p_element_is_float == NULL)
+        return false;
+
+    if (p_attribute == NULL ||
+        p_attribute->attribute_argument_clause == NULL ||
+        p_attribute->attribute_argument_clause->p_balanced_token_sequence == NULL)
+    {
+        diagnostic(W_ATTRIBUTES,
+                   ctx,
+                   p_attribute ? p_attribute->attribute_token : NULL,
+                   NULL,
+                   "vector attribute requires arguments: vector(N, ElementType)");
+        return false;
+    }
+
+    const struct balanced_token* _Opt bt =
+        p_attribute->attribute_argument_clause->p_balanced_token_sequence->head;
+
+    if (bt == NULL || !parse_positive_int_token(bt->token, p_lanes))
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "vector attribute expects a positive integer lane count");
+        return false;
+    }
+
+    bt = bt->next;
+    if (bt == NULL || bt->token->type != ',')
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "vector attribute expects ',' between lane count and element type");
+        return false;
+    }
+
+    bt = bt->next;
+    if (bt == NULL || !token_is_identifier_or_keyword(bt->token->type))
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "vector attribute expects an element type name");
+        return false;
+    }
+
+    snprintf(element_name, 64, "%s", bt->token->lexeme);
+    *p_element_is_float = is_float_name_for_math_type(element_name);
+
+    if (bt->next != NULL)
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "vector attribute received too many arguments");
+        return false;
+    }
+
+    return true;
+}
+
+static bool parse_matrix_attribute_args(struct parser_ctx* ctx,
+                                        const struct attribute* p_attribute,
+                                        int* p_rows,
+                                        int* p_cols,
+                                        char element_name[64],
+                                        bool* p_element_is_float)
+{
+    if (p_rows == NULL || p_cols == NULL || element_name == NULL || p_element_is_float == NULL)
+        return false;
+
+    if (p_attribute == NULL ||
+        p_attribute->attribute_argument_clause == NULL ||
+        p_attribute->attribute_argument_clause->p_balanced_token_sequence == NULL)
+    {
+        diagnostic(W_ATTRIBUTES,
+                   ctx,
+                   p_attribute ? p_attribute->attribute_token : NULL,
+                   NULL,
+                   "matrix attribute requires arguments: matrix(Rows, Cols, ElementType)");
+        return false;
+    }
+
+    const struct balanced_token* _Opt bt =
+        p_attribute->attribute_argument_clause->p_balanced_token_sequence->head;
+
+    if (bt == NULL || !parse_positive_int_token(bt->token, p_rows))
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects a positive integer row count");
+        return false;
+    }
+
+    bt = bt->next;
+    if (bt == NULL || bt->token->type != ',')
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects ',' after row count");
+        return false;
+    }
+
+    bt = bt->next;
+    if (bt == NULL || !parse_positive_int_token(bt->token, p_cols))
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects a positive integer column count");
+        return false;
+    }
+
+    bt = bt->next;
+    if (bt == NULL || bt->token->type != ',')
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects ',' before element type");
+        return false;
+    }
+
+    bt = bt->next;
+    if (bt == NULL || !token_is_identifier_or_keyword(bt->token->type))
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute expects an element type name");
+        return false;
+    }
+
+    snprintf(element_name, 64, "%s", bt->token->lexeme);
+    *p_element_is_float = is_float_name_for_math_type(element_name);
+
+    if (bt->next != NULL)
+    {
+        diagnostic(W_ATTRIBUTES, ctx, p_attribute->attribute_token, NULL, "matrix attribute received too many arguments");
+        return false;
+    }
+
+    return true;
+}
+
+static void collect_math_type_attributes(struct parser_ctx* ctx,
+                                         struct struct_or_union_specifier* p_struct_or_union_specifier)
+{
+    if (p_struct_or_union_specifier == NULL ||
+        p_struct_or_union_specifier->attribute_specifier_sequence_opt == NULL)
+    {
+        return;
+    }
+
+    const struct attribute_specifier* _Opt p_as =
+        p_struct_or_union_specifier->attribute_specifier_sequence_opt->head;
+    while (p_as)
+    {
+        if (p_as->attribute_list)
+        {
+            const struct attribute* _Opt p_a = p_as->attribute_list->head;
+            while (p_a)
+            {
+                if (p_a->attributes_flags & CAKE_ATTRIBUTE_VECTOR)
+                {
+                    int lanes = 0;
+                    char element_name[64] = { 0 };
+                    bool is_float_element = false;
+                    if (parse_vector_attribute_args(ctx, p_a, &lanes, element_name, &is_float_element))
+                    {
+                        p_struct_or_union_specifier->cake_math_vector = true;
+                        p_struct_or_union_specifier->cake_vector_lanes = lanes;
+                        p_struct_or_union_specifier->cake_vector_element_is_float = is_float_element;
+                        snprintf(p_struct_or_union_specifier->cake_vector_element_name,
+                                 sizeof p_struct_or_union_specifier->cake_vector_element_name,
+                                 "%s",
+                                 element_name);
+                    }
+                }
+                else if (p_a->attributes_flags & CAKE_ATTRIBUTE_MATRIX)
+                {
+                    int rows = 0;
+                    int cols = 0;
+                    char element_name[64] = { 0 };
+                    bool is_float_element = false;
+                    if (parse_matrix_attribute_args(ctx, p_a, &rows, &cols, element_name, &is_float_element))
+                    {
+                        p_struct_or_union_specifier->cake_math_matrix = true;
+                        p_struct_or_union_specifier->cake_matrix_rows = rows;
+                        p_struct_or_union_specifier->cake_matrix_cols = cols;
+                        p_struct_or_union_specifier->cake_matrix_element_is_float = is_float_element;
+                        snprintf(p_struct_or_union_specifier->cake_matrix_element_name,
+                                 sizeof p_struct_or_union_specifier->cake_matrix_element_name,
+                                 "%s",
+                                 element_name);
+                    }
+                }
+                p_a = p_a->next;
+            }
+        }
+        p_as = p_as->next;
+    }
+}
+
 void struct_or_union_specifier_delete(struct struct_or_union_specifier* _Owner _Opt p)
 {
     if (p)
@@ -4960,6 +5179,7 @@ struct struct_or_union_specifier* _Owner _Opt struct_or_union_specifier(struct p
 
         assert(p_struct_or_union_specifier->attribute_specifier_sequence_opt == NULL);
         p_struct_or_union_specifier->attribute_specifier_sequence_opt = attribute_specifier_sequence_opt(ctx);
+        collect_math_type_attributes(ctx, p_struct_or_union_specifier);
 
         struct struct_or_union_specifier* _Opt p_first_tag_in_this_scope = NULL;
 
@@ -9268,6 +9488,16 @@ enum attribute_flags attribute_token(struct parser_ctx* ctx, struct attribute* p
             is_standard_attribute = true;
             attribute_flags = CAKE_ATTRIBUTE_CTOR;
         }
+        else if (strcmp(attr_token->lexeme, "vector") == 0)
+        {
+            is_standard_attribute = true;
+            attribute_flags = CAKE_ATTRIBUTE_VECTOR;
+        }
+        else if (strcmp(attr_token->lexeme, "matrix") == 0)
+        {
+            is_standard_attribute = true;
+            attribute_flags = CAKE_ATTRIBUTE_MATRIX;
+        }
 
         const bool is_cake_attr = strcmp(attr_token->lexeme, "cake") == 0;
 
@@ -9296,6 +9526,14 @@ enum attribute_flags attribute_token(struct parser_ctx* ctx, struct attribute* p
                 if (strcmp(ctx->current->lexeme, "leak") == 0)
                 {
                     attribute_flags = CAKE_ATTRIBUTE_LEAK;
+                }
+                else if (strcmp(ctx->current->lexeme, "vector") == 0)
+                {
+                    attribute_flags = CAKE_ATTRIBUTE_VECTOR;
+                }
+                else if (strcmp(ctx->current->lexeme, "matrix") == 0)
+                {
+                    attribute_flags = CAKE_ATTRIBUTE_MATRIX;
                 }
                 else
                 {

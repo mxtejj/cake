@@ -37,6 +37,8 @@ enum attribute_flags
     //TODO decide attribute or not
     CAKE_ATTRIBUTE_CTOR = 1 << 7,
     CAKE_ATTRIBUTE_DTOR = 1 << 8,
+    CAKE_ATTRIBUTE_VECTOR = 1 << 9,
+    CAKE_ATTRIBUTE_MATRIX = 1 << 10,
 
     /*
      1 == 2 results in int in C
@@ -349,6 +351,8 @@ bool type_is_compatible(const struct type* a, const struct type* b);
 bool type_is_scalar(const struct type* p_type);
 bool type_is_scalar_decay(const struct type* p_type);
 bool type_has_attribute(const struct type* p_type, enum attribute_flags attributes);
+bool type_get_math_vector_info(const struct type* p_type, int* _Opt p_lanes, bool* _Opt p_is_float_element);
+bool type_get_math_matrix_info(const struct type* p_type, int* _Opt p_rows, int* _Opt p_cols, bool* _Opt p_is_float_element);
 bool type_is_bool(const struct type* p_type);
 bool type_is_decimal128(const struct type* p_type);
 bool type_is_decimal64(const struct type* p_type);
